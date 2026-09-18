@@ -267,6 +267,7 @@ a {
   border: 1px solid #dad6c8;
   padding: 0 12px;
   font-size: 14.5px;
+  font-family: "Public Sans", "Segoe UI", system-ui, sans-serif;
   color: var(--texto);
   background: var(--fondo-campo);
   width: 100%;

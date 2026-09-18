@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>AgroControl</title>
+<meta name="description" content="Control de consumo de balanceados por potrero — Grupo Piveta">
+<meta name="theme-color" content="#16241B">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+  <div id="app">
+    <div class="barra-superior">
+      <div>
+        <div class="logo">AgroControl</div>
+        <div class="subtitulo" id="subtitulo-establecimiento">Balanceados</div>
+      </div>
+      <div class="avatar-usuario">NB</div>
+    </div>
+
+    <div id="pantalla-registro" class="pantalla activa">
+      <div class="contenido-pantalla" id="contenido-registro"></div>
+    </div>
+    <div id="pantalla-consolidado" class="pantalla">
+      <div class="contenido-pantalla" id="contenido-consolidado"></div>
+    </div>
+    <div id="pantalla-estadisticas" class="pantalla">
+      <div class="contenido-pantalla" id="contenido-estadisticas"></div>
+    </div>
+    <div id="pantalla-ajustes" class="pantalla">
+      <div class="contenido-pantalla" id="contenido-ajustes"></div>
+    </div>
+
+    <nav class="nav-inferior" id="nav-inferior"></nav>
+  </div>
+
+  <!-- Librerías vendorizadas (sin CDN) para exportar Excel/PDF sin conexión -->
+  <script src="vendor/exceljs.min.js"></script>
+  <script src="vendor/jspdf.umd.min.js"></script>
+  <script src="vendor/jspdf.plugin.autotable.min.js"></script>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

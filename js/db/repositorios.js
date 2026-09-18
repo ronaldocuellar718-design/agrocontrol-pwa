@@ -108,7 +108,11 @@ export async function listarPotreros(soloActivos = true, establecimientoId = nul
   resultado.sort((a, b) => {
     const cmpEstablecimiento = a.establecimientoNombre.localeCompare(b.establecimientoNombre, "es");
     if (cmpEstablecimiento !== 0) return cmpEstablecimiento;
-    return a.nombre.localeCompare(b.nombre, "es");
+    
+    // Ordenamiento numérico: extrae el número del nombre (ej: "Potrero 1" → 1)
+    const numA = parseInt(a.nombre.match(/\d+/)?.[0] ?? 999, 10);
+    const numB = parseInt(b.nombre.match(/\d+/)?.[0] ?? 999, 10);
+    return numA - numB;
   });
 
   return resultado;

@@ -15,7 +15,7 @@
  * el servidor.
  */
 
-const NOMBRE_CACHE = "agrocontrol-v10";
+const NOMBRE_CACHE = "agrocontrol-v11";
 
 const ARCHIVOS_A_CACHEAR = [
   "./",

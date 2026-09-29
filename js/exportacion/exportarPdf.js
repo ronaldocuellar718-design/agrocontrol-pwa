@@ -6,13 +6,14 @@
  */
 
 import { NOMBRES_MESES } from "../utilidades.js";
+import { nombreConMarcaDeTiempo } from "./archivosDescargables.js";
 
 const COLOR_ENCABEZADO = [22, 36, 27]; // #16241B
 const COLOR_TOTAL = [234, 242, 237]; // #EAF2ED
 const COLOR_BORDE = [228, 225, 214]; // #E4E1D6
 const COLOR_SUBTITULO = [107, 117, 104]; // #6B7568
 
-export function exportarConsolidadoPdf(resultado, mes, anio, nombreEstablecimientoFiltro) {
+export function generarConsolidadoPdf(resultado, mes, anio, nombreEstablecimientoFiltro) {
   const { jsPDF } = window.jspdf;
   const documento = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
@@ -63,7 +64,11 @@ export function exportarConsolidadoPdf(resultado, mes, anio, nombreEstablecimien
     },
   });
 
-  const nombreArchivo = `Consolidado_${nombreMes}_${anio}${mostrandoTodos ? "" : "_" + nombreEstablecimientoFiltro.replace(/\s+/g, "")}.pdf`;
-  documento.save(nombreArchivo);
-  return nombreArchivo;
+  const nombreArchivo = nombreConMarcaDeTiempo(
+    `Consolidado_${nombreMes}_${anio}${mostrandoTodos ? "" : "_" + nombreEstablecimientoFiltro.replace(/\s+/g, "")}`,
+    "pdf"
+  );
+  // No descarga nada acá: devuelve el archivo listo y la pantalla decide
+  // cómo entregarlo (ver `ofrecerArchivo` en componentesComunes.js).
+  return { blob: documento.output("blob"), nombreArchivo, tipoMime: "application/pdf" };
 }

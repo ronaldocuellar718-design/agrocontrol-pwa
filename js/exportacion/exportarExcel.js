@@ -5,12 +5,13 @@
  * sin import, ya que no es un módulo ES).
  */
 
-import { NOMBRES_MESES, formatearKg } from "../utilidades.js";
+import { NOMBRES_MESES } from "../utilidades.js";
+import { nombreConMarcaDeTiempo } from "./archivosDescargables.js";
 
 const COLOR_ENCABEZADO = "FF16241B";
 const COLOR_TOTAL = "FFEAF2ED";
 
-export async function exportarConsolidadoExcel(resultado, mes, anio, nombreEstablecimientoFiltro) {
+export async function generarConsolidadoExcel(resultado, mes, anio, nombreEstablecimientoFiltro) {
   const ExcelJS = window.ExcelJS;
   const libro = new ExcelJS.Workbook();
   const hoja = libro.addWorksheet("Consolidado Mensual");
@@ -97,23 +98,12 @@ export async function exportarConsolidadoExcel(resultado, mes, anio, nombreEstab
   hoja.columns = anchos.map((w) => ({ width: w }));
 
   const buffer = await libro.xlsx.writeBuffer();
-  const nombreArchivo = `Consolidado_${nombreMes}_${anio}${mostrandoTodos ? "" : "_" + nombreEstablecimientoFiltro.replace(/\s+/g, "")}.xlsx`;
-  descargarBlob(
-    buffer,
-    nombreArchivo,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  const tipoMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const nombreArchivo = nombreConMarcaDeTiempo(
+    `Consolidado_${nombreMes}_${anio}${mostrandoTodos ? "" : "_" + nombreEstablecimientoFiltro.replace(/\s+/g, "")}`,
+    "xlsx"
   );
-  return nombreArchivo;
-}
-
-function descargarBlob(datos, nombreArchivo, tipoMime) {
-  const blob = new Blob([datos], { type: tipoMime });
-  const url = URL.createObjectURL(blob);
-  const enlace = document.createElement("a");
-  enlace.href = url;
-  enlace.download = nombreArchivo;
-  document.body.appendChild(enlace);
-  enlace.click();
-  enlace.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  // No descarga nada acá: devuelve el archivo listo y la pantalla decide
+  // cómo entregarlo (ver `ofrecerArchivo` en componentesComunes.js).
+  return { blob: new Blob([buffer], { type: tipoMime }), nombreArchivo, tipoMime };
 }

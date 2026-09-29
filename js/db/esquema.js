@@ -35,6 +35,8 @@
  * el pasaje desde los datos de prueba usados durante el desarrollo.
  */
 
+import { horaActualCompleta } from "../utilidades.js";
+
 export const CATEGORIAS_INICIALES = ["Nutrogénesis", "Proteinado", "Nutrorodeo"];
 
 /**
@@ -106,6 +108,53 @@ function sembrarDatosReales(transaccion) {
       }
     };
   }
+}
+
+const NOMBRE_ESTABLECIMIENTO_DE_PRUEBA = "BAHIA RICA CENTRAL";
+
+/**
+ * Versión 3 del esquema: las entregas cargadas durante las pruebas (todas
+ * bajo el establecimiento "BAHIA RICA CENTRAL", ya desactivado) quedaban
+ * sumadas en los totales del mes, el Excel y el PDF, mezcladas con los
+ * datos reales. Acá se ANULAN — no se borran: cambian a estado 'anulado',
+ * igual que cuando se toca "Anular" en el Registro Diario, y siguen
+ * figurando como anuladas en el JSON del respaldo. Solo se tocan entregas
+ * activas de potreros de ese establecimiento; las reales no se tocan.
+ *
+ * Corre dentro de la transacción de actualización, encadenando cada
+ * lectura en el `onsuccess` de la anterior (sin `await` de por medio).
+ */
+function anularEntregasDePrueba(transaccion) {
+  const almacenEstablecimientos = transaccion.objectStore("establecimientos");
+  const almacenPotreros = transaccion.objectStore("potreros");
+  const almacenEntregas = transaccion.objectStore("entregas");
+
+  almacenEstablecimientos.getAll().onsuccess = (eventoEstablecimientos) => {
+    const idsDePrueba = eventoEstablecimientos.target.result
+      .filter((establecimiento) => establecimiento.nombre === NOMBRE_ESTABLECIMIENTO_DE_PRUEBA)
+      .map((establecimiento) => establecimiento.id);
+    if (idsDePrueba.length === 0) return;
+
+    almacenPotreros.getAll().onsuccess = (eventoPotreros) => {
+      const potrerosDePrueba = new Set(
+        eventoPotreros.target.result
+          .filter((potrero) => idsDePrueba.includes(potrero.establecimientoId))
+          .map((potrero) => potrero.id)
+      );
+      if (potrerosDePrueba.size === 0) return;
+
+      almacenEntregas.getAll().onsuccess = (eventoEntregas) => {
+        const ahora = horaActualCompleta();
+        for (const entrega of eventoEntregas.target.result) {
+          if (entrega.estado === "activo" && potrerosDePrueba.has(entrega.potreroId)) {
+            entrega.estado = "anulado";
+            entrega.fechaAnulacion = ahora;
+            almacenEntregas.put(entrega);
+          }
+        }
+      };
+    };
+  };
 }
 
 /**
@@ -187,7 +236,14 @@ export function crearEsquema(bd, transaccion, oldVersion) {
     sembrarDatosReales(transaccion);
   }
 
-  // Futuras versiones del esquema (oldVersion < 3, etc.) se agregan
+  // Versión 3: se anulan las entregas de prueba que quedaron mezcladas
+  // con los datos reales (ver `anularEntregasDePrueba`). Un teléfono
+  // nuevo (oldVersion 0) no tiene nada que limpiar.
+  if (oldVersion >= 1 && oldVersion < 3) {
+    anularEntregasDePrueba(transaccion);
+  }
+
+  // Futuras versiones del esquema (oldVersion < 4, etc.) se agregan
   // acá como bloques `if` adicionales, sin tocar los anteriores — así
   // una actualización nunca pierde los datos ya cargados en el
   // teléfono.

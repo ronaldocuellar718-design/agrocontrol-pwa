@@ -23,7 +23,7 @@
 import { crearEsquema } from "./esquema.js";
 
 export const NOMBRE_BASE_DATOS = "agrocontrol";
-export const VERSION_ESQUEMA = 2;
+export const VERSION_ESQUEMA = 3;
 
 let promesaBaseDatos = null;
 

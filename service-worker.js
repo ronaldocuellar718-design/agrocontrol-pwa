@@ -15,7 +15,7 @@
  * el servidor.
  */
 
-const NOMBRE_CACHE = "agrocontrol-v11";
+const NOMBRE_CACHE = "agrocontrol-v12";
 
 const ARCHIVOS_A_CACHEAR = [
   "./",
@@ -38,6 +38,7 @@ const ARCHIVOS_A_CACHEAR = [
   "./js/ui/pantallaConsolidado.js",
   "./js/ui/pantallaEstadisticas.js",
   "./js/ui/pantallaAjustes.js",
+  "./js/exportacion/archivosDescargables.js",
   "./js/exportacion/exportarExcel.js",
   "./js/exportacion/exportarPdf.js",
   "./vendor/exceljs.min.js",

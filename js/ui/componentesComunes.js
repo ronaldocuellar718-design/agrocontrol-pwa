@@ -8,6 +8,7 @@
  */
 
 import { iconoFlechaAbajo } from "./iconos.js";
+import { descargarArchivo, puedeCompartirEnEsteDispositivo } from "../exportacion/archivosDescargables.js";
 
 export function el(etiqueta, atributos = {}, hijos = []) {
   const elemento = document.createElement(etiqueta);
@@ -233,6 +234,87 @@ export function mostrarExito(mensaje, titulo = "Listo") {
 }
 
 /** Devuelve una Promise<boolean>: true si el usuario confirmó. */
+
+/**
+ * Entrega un archivo recién generado (Excel o PDF).
+ *
+ *  - En el celular (pantalla táctil que sabe compartir archivos): muestra
+ *    el cartel "Archivo listo" con dos botones — "Abrir o compartir"
+ *    (abre el menú de Android: ver el PDF, imprimir, WhatsApp, Drive…)
+ *    y "Guardar en el celular" (descarga a la carpeta Descargas).
+ *    El menú de compartir se abre desde un botón tocado a propósito,
+ *    porque los navegadores solo lo permiten con un toque directo (no
+ *    después de esperar a que se genere el archivo).
+ *  - En la computadora: se descarga directo, como siempre.
+ */
+export async function ofrecerArchivo({ blob, nombreArchivo, tipoMime, etiquetaTipo }) {
+  const archivo = new File([blob], nombreArchivo, { type: tipoMime });
+
+  if (!puedeCompartirEnEsteDispositivo(archivo)) {
+    descargarArchivo(blob, nombreArchivo);
+    await mostrarExito(`Se descargó el archivo en la carpeta Descargas:\n${nombreArchivo}`);
+    return;
+  }
+
+  const hora = new Date().toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" });
+
+  await abrirModal((resolver, cerrar) => {
+    const avisoError = el("div", { class: "aviso aviso-error", style: "display:none;" }, "");
+
+    const botonCompartir = el(
+      "button",
+      {
+        class: "boton boton-primario",
+        onclick: async () => {
+          avisoError.style.display = "none";
+          try {
+            await navigator.share({ files: [archivo], title: nombreArchivo });
+            resolver();
+            cerrar();
+          } catch (error) {
+            // Si la persona cerró el menú sin elegir nada, el cartel
+            // queda abierto para que pueda intentarlo de nuevo.
+            if (error?.name === "AbortError") return;
+            avisoError.textContent = 'No se pudo abrir el menú de compartir. Usá "Guardar en el celular".';
+            avisoError.style.display = "block";
+          }
+        },
+      },
+      "Abrir o compartir"
+    );
+
+    const botonGuardar = el(
+      "button",
+      {
+        class: "boton boton-secundario",
+        onclick: () => {
+          descargarArchivo(blob, nombreArchivo);
+          resolver();
+          cerrar();
+          mostrarToast(`Guardado en la carpeta Descargas: ${nombreArchivo}`, 6000);
+        },
+      },
+      "Guardar en el celular"
+    );
+
+    return el("div", { style: "display:flex;flex-direction:column;gap:12px;" }, [
+      el("div", { class: "modal-titulo" }, "Archivo listo"),
+      el("div", { style: "background:var(--ivory);border-radius:10px;padding:10px 12px;" }, [
+        el("div", { style: "font-size:12.5px;font-weight:700;color:var(--verde-oscuro);word-break:break-all;" }, nombreArchivo),
+        el("div", { style: "font-size:11.5px;color:var(--texto-secundario);margin-top:2px;" }, `${etiquetaTipo} · generado hoy a las ${hora}`),
+      ]),
+      avisoError,
+      botonCompartir,
+      botonGuardar,
+      el(
+        "div",
+        { style: "font-size:11.5px;color:var(--texto-secundario);line-height:1.4;text-align:center;" },
+        '"Abrir o compartir" te deja elegir la aplicación: ver el archivo, imprimir, mandarlo por WhatsApp o guardarlo en Drive.'
+      ),
+    ]);
+  });
+}
+
 export function mostrarConfirmacion(mensaje, titulo = "Confirmar", textoConfirmar = "Confirmar") {
   return abrirModal((resolver, cerrar) =>
     el("div", { style: "display:flex;flex-direction:column;gap:14px;" }, [

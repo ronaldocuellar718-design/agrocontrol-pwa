@@ -4,14 +4,15 @@
 
 import * as servicioConsolidado from "../logica/servicioConsolidado.js";
 import * as repositorios from "../db/repositorios.js";
-import { el, vaciar, mostrarError, mostrarExito, crearSelectPersonalizado } from "./componentesComunes.js";
-import { iconoDescargar } from "./iconos.js";
+import { el, vaciar, mostrarError, ofrecerArchivo, crearSelectPersonalizado } from "./componentesComunes.js";
+import { iconoDescargar, iconoFlechaAbajo } from "./iconos.js";
 import { NOMBRES_MESES, formatearKg } from "../utilidades.js";
-import { exportarConsolidadoExcel } from "../exportacion/exportarExcel.js";
-import { exportarConsolidadoPdf } from "../exportacion/exportarPdf.js";
+import { generarConsolidadoExcel } from "../exportacion/exportarExcel.js";
+import { generarConsolidadoPdf } from "../exportacion/exportarPdf.js";
 
 let contenedorRaiz = null;
-let selectEstablecimiento, selectMes, selectAnio, contenedorLista, etiquetaTotalKg, etiquetaTotalViajes, etiquetaTituloTotal;
+let selectEstablecimiento, selectMes, selectAnio, contenedorLista, contenedorListaDia, etiquetaTotalKg, etiquetaTotalViajes, etiquetaTituloTotal;
+let botonesTabConsolidado, panelesTabConsolidado;
 let resultadoActual = null;
 
 export function montar(contenedor) {
@@ -44,6 +45,7 @@ export function montar(contenedor) {
   etiquetaTotalViajes = el("span", { style: "font-size:13px;font-weight:700;color:#FFFFFF;" }, "0");
 
   contenedorLista = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
+  contenedorListaDia = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
 
   contenedor.appendChild(
     el("div", { style: "display:flex;align-items:center;justify-content:space-between;" }, [
@@ -73,12 +75,41 @@ export function montar(contenedor) {
     ])
   );
 
+  const tabsDetalle = [
+    { titulo: "Por Potrero", panel: contenedorLista },
+    { titulo: "Por Día", panel: contenedorListaDia },
+  ];
+  botonesTabConsolidado = [];
+  panelesTabConsolidado = [];
+  const barraTabsDetalle = el("div", { class: "tabs" });
+  tabsDetalle.forEach((tab, indice) => {
+    const boton = el(
+      "button",
+      { class: `tab-boton${indice === 0 ? " activo" : ""}`, onclick: () => seleccionarTabDetalle(indice) },
+      tab.titulo
+    );
+    botonesTabConsolidado.push(boton);
+    barraTabsDetalle.appendChild(boton);
+
+    tab.panel.classList.add("tab-panel");
+    tab.panel.style.display = indice === 0 ? "flex" : "none";
+    panelesTabConsolidado.push(tab.panel);
+  });
+
   contenedor.appendChild(
-    el("div", { style: "display:flex;flex-direction:column;gap:8px;" }, [
-      el("div", { style: "font-size:14.5px;font-weight:700;color:var(--verde-oscuro);" }, "Detalle por Potrero"),
+    el("div", { style: "display:flex;flex-direction:column;gap:10px;" }, [
+      barraTabsDetalle,
       contenedorLista,
+      contenedorListaDia,
     ])
   );
+}
+
+function seleccionarTabDetalle(indice) {
+  botonesTabConsolidado.forEach((b, i) => b.classList.toggle("activo", i === indice));
+  panelesTabConsolidado.forEach((p, i) => {
+    p.style.display = i === indice ? "flex" : "none";
+  });
 }
 
 async function recargarComboEstablecimientos() {
@@ -113,24 +144,89 @@ export async function actualizar() {
     contenedorLista.appendChild(
       el("div", { class: "aviso-vacio" }, "No hay entregas registradas en el mes y año seleccionados.")
     );
-    return;
+  } else {
+    for (const dato of resultadoActual.filas) {
+      const nombreMostrado = mostrandoTodos ? `${dato.establecimientoNombre} - ${dato.potreroNombre}` : dato.potreroNombre;
+      contenedorLista.appendChild(
+        el("div", { class: "fila-entrega" }, [
+          el("div", { class: "datos-izquierda" }, [
+            el("span", { class: "potrero-nombre" }, nombreMostrado),
+            el("span", { class: "detalle" }, dato.categoriaNombre),
+          ]),
+          el("div", { class: "datos-derecha" }, [
+            el("span", { class: "kg" }, `${formatearKg(dato.totalKg)} kg`),
+            el("span", { class: "detalle" }, `${dato.viajes} viaje(s)`),
+          ]),
+        ])
+      );
+    }
   }
 
-  for (const dato of resultadoActual.filas) {
-    const nombreMostrado = mostrandoTodos ? `${dato.establecimientoNombre} - ${dato.potreroNombre}` : dato.potreroNombre;
-    contenedorLista.appendChild(
-      el("div", { class: "fila-entrega" }, [
-        el("div", { class: "datos-izquierda" }, [
-          el("span", { class: "potrero-nombre" }, nombreMostrado),
-          el("span", { class: "detalle" }, dato.categoriaNombre),
+  const resultadoPorDia = await servicioConsolidado.obtenerConsolidadoPorDia(mes, anio, establecimientoId);
+  vaciar(contenedorListaDia);
+  if (resultadoPorDia.dias.length === 0) {
+    contenedorListaDia.appendChild(
+      el("div", { class: "aviso-vacio" }, "No hay entregas registradas en el mes y año seleccionados.")
+    );
+  } else {
+    // Más recientes primero.
+    const diasOrdenados = [...resultadoPorDia.dias].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    for (const dia of diasOrdenados) {
+      contenedorListaDia.appendChild(construirTarjetaDia(dia, mostrandoTodos));
+    }
+  }
+}
+
+function formatearFechaLarga(fechaISO) {
+  const [, mesTexto, diaTexto] = fechaISO.split("-");
+  const dia = parseInt(diaTexto, 10);
+  const mes = parseInt(mesTexto, 10);
+  return `${dia} de ${NOMBRES_MESES[mes - 1]}`;
+}
+
+function construirTarjetaDia(dia, mostrandoTodos) {
+  const chevron = iconoFlechaAbajo();
+  chevron.style.transition = "transform 0.15s";
+  chevron.style.transform = "rotate(-90deg)";
+
+  const panelDetalle = el("div", { class: "tarjeta-dia-detalle" });
+  for (const potrero of dia.potreros) {
+    const nombreMostrado = mostrandoTodos ? `${potrero.establecimientoNombre} - ${potrero.potreroNombre}` : potrero.potreroNombre;
+    panelDetalle.appendChild(
+      el("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:8px;" }, [
+        el("span", { style: "font-size:12.5px;color:var(--texto);" }, [
+          nombreMostrado,
+          el("span", { style: "color:var(--texto-secundario);" }, ` · ${potrero.categoriaNombre}`),
         ]),
-        el("div", { class: "datos-derecha" }, [
-          el("span", { class: "kg" }, `${formatearKg(dato.totalKg)} kg`),
-          el("span", { class: "detalle" }, `${dato.viajes} viaje(s)`),
-        ]),
+        el("span", { style: "font-size:12.5px;font-weight:700;color:var(--verde-oscuro);white-space:nowrap;" }, `${formatearKg(potrero.totalKg)} kg`),
       ])
     );
   }
+
+  let abierto = false;
+  const cabecera = el(
+    "div",
+    {
+      class: "tarjeta-dia-cabecera",
+      onclick: () => {
+        abierto = !abierto;
+        panelDetalle.classList.toggle("abierto", abierto);
+        chevron.style.transform = abierto ? "rotate(0deg)" : "rotate(-90deg)";
+      },
+    },
+    [
+      el("div", { style: "display:flex;align-items:center;gap:8px;" }, [
+        chevron,
+        el("span", { style: "font-size:13.5px;font-weight:700;color:var(--verde-oscuro);" }, formatearFechaLarga(dia.fecha)),
+      ]),
+      el("div", { style: "text-align:right;" }, [
+        el("div", { style: "font-size:14px;font-weight:700;color:var(--verde-oscuro);" }, `${formatearKg(dia.totalKg)} kg`),
+        el("div", { style: "font-size:11px;color:var(--texto-secundario);" }, `${dia.viajes} entrega${dia.viajes === 1 ? "" : "s"}`),
+      ]),
+    ]
+  );
+
+  return el("div", { class: "tarjeta tarjeta-dia" }, [cabecera, panelDetalle]);
 }
 
 function nombreEstablecimientoActual() {
@@ -144,8 +240,8 @@ async function alExportarExcel() {
   }
   const [mes, anio] = mesYAnioSeleccionados();
   try {
-    const nombreArchivo = await exportarConsolidadoExcel(resultadoActual, mes, anio, nombreEstablecimientoActual());
-    await mostrarExito(`Se descargó el archivo:\n${nombreArchivo}`);
+    const archivo = await generarConsolidadoExcel(resultadoActual, mes, anio, nombreEstablecimientoActual());
+    await ofrecerArchivo({ ...archivo, etiquetaTipo: "Excel" });
   } catch (error) {
     await mostrarError(`No se pudo generar el archivo Excel.\n\nDetalle: ${error.message}`);
   }
@@ -158,8 +254,8 @@ async function alExportarPdf() {
   }
   const [mes, anio] = mesYAnioSeleccionados();
   try {
-    const nombreArchivo = exportarConsolidadoPdf(resultadoActual, mes, anio, nombreEstablecimientoActual());
-    await mostrarExito(`Se descargó el archivo:\n${nombreArchivo}`);
+    const archivo = generarConsolidadoPdf(resultadoActual, mes, anio, nombreEstablecimientoActual());
+    await ofrecerArchivo({ ...archivo, etiquetaTipo: "PDF" });
   } catch (error) {
     await mostrarError(`No se pudo generar el archivo PDF.\n\nDetalle: ${error.message}`);
   }

@@ -99,12 +99,39 @@ function formatearUltimoRespaldo(fecha) {
   return mismoDia ? `Última copia de seguridad: hoy ${hora}` : `Última copia de seguridad: ${fecha.toLocaleDateString("es-PY")} ${hora}`;
 }
 
+/** Un intento de respaldo, paso a paso, para el "Detalle" de Ajustes. */
+function pintarIntento(titulo, intento) {
+  if (!intento) {
+    return el("div", { style: "text-align:left;" }, [
+      el("div", { style: "font-weight:700;color:var(--verde-oscuro);" }, titulo),
+      el("div", {}, "Todavía no hubo ningún intento."),
+    ]);
+  }
+  const cuando = new Date(intento.cuando);
+  const fecha = `${cuando.toLocaleDateString("es-PY")} ${cuando.toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" })}`;
+  const estado = intento.resultado === "ok" ? "completado" : intento.resultado === "fallo" ? "no se completó" : "quedó sin terminar";
+  return el("div", { style: "text-align:left;line-height:1.5;" }, [
+    el("div", { style: "font-weight:700;color:var(--verde-oscuro);" }, `${titulo} · ${fecha} · ${estado}`),
+    ...intento.pasos.map((paso) => el("div", { style: paso.ok ? "" : "color:var(--rojo);" }, `${paso.ok ? "✓" : "✗"} ${paso.texto}`)),
+  ]);
+}
+
+let refrescarTarjetaRespaldo = null;
+
 function crearTarjetaRespaldo() {
-  const etiquetaUltimoRespaldo = el(
-    "div",
-    { style: "font-size:12px;color:var(--texto-secundario);text-align:center;" },
-    formatearUltimoRespaldo(servicioRespaldo.obtenerUltimoExito())
+  const estiloTexto = "font-size:12px;color:var(--texto-secundario);text-align:center;";
+  const etiquetaUltimoRespaldo = el("div", { style: estiloTexto }, "");
+  const etiquetaCuenta = el("div", { style: estiloTexto }, "");
+  const enlaceCarpeta = el(
+    "a",
+    { class: "boton boton-secundario", target: "_blank", rel: "noopener", style: "display:none;" },
+    "Abrir carpeta en Google Drive"
   );
+  const contenedorDetalle = el("div", { style: "display:flex;flex-direction:column;gap:10px;margin-top:8px;" });
+  const detalle = el("details", { style: "font-size:11.5px;color:var(--texto-secundario);" }, [
+    el("summary", { style: "cursor:pointer;text-align:center;" }, "Detalle de los últimos intentos"),
+    contenedorDetalle,
+  ]);
 
   const boton = el(
     "button",
@@ -132,9 +159,38 @@ function crearTarjetaRespaldo() {
     "Salir con copia de seguridad"
   );
 
+  refrescarTarjetaRespaldo = () => {
+    const ultimo = servicioRespaldo.obtenerUltimoExito();
+    etiquetaUltimoRespaldo.textContent = formatearUltimoRespaldo(ultimo);
+
+    const cuenta = servicioRespaldo.obtenerCuentaUltimoRespaldo();
+    etiquetaCuenta.textContent = !ultimo
+      ? "Cuenta: todavía no hay ninguna copia guardada"
+      : cuenta
+        ? `Cuenta: ${cuenta}`
+        : "Cuenta: no se pudo leer el correo";
+
+    const enlace = servicioRespaldo.obtenerEnlaceCarpeta();
+    if (enlace) {
+      enlaceCarpeta.setAttribute("href", enlace);
+      enlaceCarpeta.style.display = "inline-flex";
+    } else {
+      enlaceCarpeta.style.display = "none";
+    }
+
+    const { manual, automatico } = servicioRespaldo.obtenerDiagnosticos();
+    vaciar(contenedorDetalle);
+    contenedorDetalle.appendChild(pintarIntento("Botón manual", manual));
+    contenedorDetalle.appendChild(pintarIntento("Automático", automatico));
+  };
+  refrescarTarjetaRespaldo();
+
   return el("div", { style: "display:flex;flex-direction:column;gap:8px;padding-top:18px;margin-top:4px;border-top:1px solid var(--borde);" }, [
     boton,
     etiquetaUltimoRespaldo,
+    etiquetaCuenta,
+    enlaceCarpeta,
+    detalle,
   ]);
 }
 
@@ -148,6 +204,9 @@ function seleccionarTab(indice) {
 }
 
 export async function actualizar() {
+  // La tarjeta de respaldo se refresca cada vez que se entra a Ajustes.
+  if (refrescarTarjetaRespaldo) refrescarTarjetaRespaldo();
+
   // Siempre refresca la pestaña actualmente visible.
   const indiceActivo = botonesTab.findIndex((b) => b.classList.contains("activo"));
   if (indiceActivo >= 0) {

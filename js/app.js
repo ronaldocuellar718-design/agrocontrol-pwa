@@ -16,7 +16,7 @@ import * as pantallaConsolidado from "./ui/pantallaConsolidado.js";
 import * as pantallaEstadisticas from "./ui/pantallaEstadisticas.js";
 import * as pantallaAjustes from "./ui/pantallaAjustes.js";
 import * as servicioRespaldo from "./logica/servicioRespaldo.js";
-import { el, mostrarToast } from "./ui/componentesComunes.js";
+import { el, mostrarToast, mostrarError } from "./ui/componentesComunes.js";
 import { iconoRegistro, iconoConsolidado, iconoEstadisticas, iconoAjustes } from "./ui/iconos.js";
 
 const PANTALLAS = [
@@ -65,61 +65,146 @@ async function iniciar() {
   // que se vea la pantalla de Registro Diario.
   verificarAlmacenamiento();
 
-  // Respaldo a Google Drive: primero se resuelve si la persona viene
-  // recién de autorizar (o cancelar) en Google, tras tocar "Salir con
-  // copia de seguridad" — eso termina de subir el respaldo pendiente.
-  // Si no hay nada pendiente, se precarga el script de Google de
-  // antemano (para que el botón manual no tenga que esperar una
-  // descarga) y se intenta un respaldo silencioso si ya hay conexión
-  // y alguien autorizó el acceso alguna vez. También se reintenta
-  // cada vez que el celular recupera señal.
+  // Respaldo a Google Drive. Se precarga el script de Google de
+  // antemano y se resuelve, SIN bloquear la carga de pantallas, si la
+  // persona viene de Google (o si quedó un respaldo a medias). Si no
+  // había nada en marcha, se intenta un respaldo silencioso.
   servicioRespaldo.precargarGoogle();
-  const resultadoRegreso = await servicioRespaldo.resolverRegresoDeGoogle();
-  if (resultadoRegreso.ocurrio) {
-    if (resultadoRegreso.resultado.ok) {
-      mostrarAvisoRespaldoCompletado();
-    } else if (resultadoRegreso.resultado.motivo === "cancelado") {
-      mostrarToast("No se completó la autorización con Google.");
-    } else {
-      mostrarToast("No se pudo completar la copia de seguridad. Intentá de nuevo más tarde.");
-    }
-  } else {
-    intentarRespaldoSilencioso();
-  }
+  manejarRespaldoPendiente();
   window.addEventListener("online", intentarRespaldoSilencioso);
+
+  // Si la app queda viva mientras se está en la pantalla de Google (en
+  // celulares instalados esa pantalla se abre por encima), al volver
+  // se comprueba qué pasó. Se espera unos segundos porque, si Google
+  // ya está recargando la app con la autorización, no hay que
+  // interrumpirlo: la página nueva se ocupa de todo.
+  const alVolverAPrimerPlano = () => {
+    if (!servicioRespaldo.hayRespaldoPendiente()) return;
+    setTimeout(() => {
+      if (servicioRespaldo.hayRespaldoPendiente()) manejarRespaldoPendiente();
+    }, 2500);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") alVolverAPrimerPlano();
+  });
+  window.addEventListener("pageshow", (evento) => {
+    if (evento.persisted) alVolverAPrimerPlano();
+  });
 
   // La primera pantalla visible (Registro Diario) se actualiza de una,
   // ya que el usuario la ve sin haber hecho clic en el nav.
   await PANTALLAS[0].modulo.actualizar();
 }
 
+let resolviendoRespaldo = false;
+
+/** Resuelve un respaldo en marcha (regreso de Google o subida a medias)
+ * y SIEMPRE le dice a la persona qué pasó. Si no había nada en marcha,
+ * intenta el respaldo silencioso. */
+async function manejarRespaldoPendiente() {
+  if (resolviendoRespaldo) return;
+  resolviendoRespaldo = true;
+  try {
+    const regreso = await servicioRespaldo.resolverRegresoDeGoogle({
+      alComenzar: () =>
+        mostrarAvisoRespaldo({
+          icono: "…",
+          titulo: "Guardando la copia de seguridad",
+          detalles: ["No cierres la aplicación hasta que termine"],
+        }),
+    });
+
+    if (!regreso.ocurrio) {
+      intentarRespaldoSilencioso();
+      return;
+    }
+    quitarAvisoRespaldo();
+    mostrarResultadoDeRespaldo(regreso.resultado);
+  } catch (error) {
+    quitarAvisoRespaldo();
+    await mostrarError(`Ocurrió un problema inesperado con la copia de seguridad (${error.message}).`, "Copia de seguridad sin completar");
+  } finally {
+    resolviendoRespaldo = false;
+  }
+}
+
+function mostrarResultadoDeRespaldo(resultado) {
+  if (resultado.ok) {
+    mostrarAvisoRespaldo({
+      icono: "✓",
+      titulo: "Copia de seguridad completada",
+      detalles: [
+        resultado.cuenta ? `Guardada en ${resultado.cuenta}` : "Guardada en Google Drive (no se pudo leer la cuenta)",
+        `Hoy ${horaLocalCorta()} · ya podés cerrar la aplicación`,
+      ],
+      autoCerrarMs: 10000,
+    });
+  } else if (resultado.motivo === "cancelado") {
+    mostrarToast("No se completó la autorización con Google.");
+  } else if (resultado.motivo === "sin_autorizacion") {
+    mostrarError(
+      'Se volvió de Google, pero la autorización no llegó a la aplicación, así que no se guardó nada. Probá de nuevo desde Ajustes → "Salir con copia de seguridad". Si se repite, en Ajustes → "Detalle de los últimos intentos" queda el registro.',
+      "Copia de seguridad sin completar"
+    );
+  } else {
+    mostrarError(
+      `No se pudo completar la copia de seguridad${resultado.detalle ? ` (${resultado.detalle})` : ""}. Los datos siguen guardados en el celular.`,
+      "Copia de seguridad sin completar"
+    );
+  }
+}
+
 async function intentarRespaldoSilencioso() {
   if (!navigator.onLine || !servicioRespaldo.yaAutorizado()) return;
   const resultado = await servicioRespaldo.respaldarAhora();
-  if (resultado.ok) mostrarAvisoRespaldoCompletado();
+  if (resultado.ok) mostrarResultadoDeRespaldo(resultado);
 }
 
-function mostrarAvisoRespaldoCompletado() {
+function horaLocalCorta() {
+  return new Date().toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" });
+}
+
+// ---------------------------------------------------------------------------
+// AVISO DE RESPALDO (verde, arriba)
+//
+// Un solo aviso a la vez: primero "Guardando…", después el resultado.
+// Se ubica justo debajo del encabezado; si también está el aviso rojo
+// de poco espacio, se pone debajo de ese — nunca se descarta un aviso
+// de respaldo por la presencia del otro.
+// ---------------------------------------------------------------------------
+
+let avisoRespaldoActual = null;
+
+function mostrarAvisoRespaldo({ icono, titulo, detalles = [], autoCerrarMs = 0 }) {
+  quitarAvisoRespaldo();
+
   const app = document.getElementById("app");
-  if (app.querySelector(".aviso-almacenamiento") || app.querySelector(".aviso-respaldo-exito")) return;
-
-  const barraSuperior = app.querySelector(".barra-superior");
-  const horaTexto = new Date().toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" });
-
   const aviso = el("div", { class: "aviso-respaldo-exito" }, [
-    el("span", { class: "aviso-respaldo-exito-icono" }, "✓"),
+    el("span", { class: "aviso-respaldo-exito-icono" }, icono),
     el("div", {}, [
-      el("div", { class: "aviso-respaldo-exito-titulo" }, "Copia de seguridad completada"),
-      el("div", { class: "aviso-respaldo-exito-detalle" }, `Hoy ${horaTexto} · ya podés cerrar la aplicación`),
+      el("div", { class: "aviso-respaldo-exito-titulo" }, titulo),
+      ...detalles.map((texto) => el("div", { class: "aviso-respaldo-exito-detalle" }, texto)),
     ]),
   ]);
 
-  if (barraSuperior) {
-    barraSuperior.insertAdjacentElement("afterend", aviso);
+  const ancla = app.querySelector(".aviso-almacenamiento") ?? app.querySelector(".barra-superior");
+  if (ancla) {
+    ancla.insertAdjacentElement("afterend", aviso);
   } else {
     app.prepend(aviso);
   }
-  setTimeout(() => aviso.remove(), 6000);
+  avisoRespaldoActual = aviso;
+
+  if (autoCerrarMs > 0) {
+    setTimeout(() => {
+      if (avisoRespaldoActual === aviso) quitarAvisoRespaldo();
+    }, autoCerrarMs);
+  }
+}
+
+function quitarAvisoRespaldo() {
+  if (avisoRespaldoActual) avisoRespaldoActual.remove();
+  avisoRespaldoActual = null;
 }
 
 // ---------------------------------------------------------------------------

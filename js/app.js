@@ -18,6 +18,7 @@ import * as pantallaAjustes from "./ui/pantallaAjustes.js";
 import * as servicioRespaldo from "./logica/servicioRespaldo.js";
 import { el, mostrarToast, mostrarError } from "./ui/componentesComunes.js";
 import { iconoRegistro, iconoConsolidado, iconoEstadisticas, iconoAjustes } from "./ui/iconos.js";
+import { fechaHoyISO } from "./utilidades.js";
 
 const PANTALLAS = [
   { id: "registro", titulo: "Registro", icono: iconoRegistro, modulo: pantallaRegistro, contenedor: "contenido-registro", pantalla: "pantalla-registro" },
@@ -49,6 +50,19 @@ async function irAPantalla(indice) {
   await PANTALLAS[indice].modulo.actualizar();
 }
 
+// Si la app queda abierta y pasa la medianoche, al volver a usarla las
+// pantallas todavía muestran el día anterior (fecha, "Kg hoy", lista).
+// Acá se detecta el cambio de día y se refresca la pantalla que se ve.
+let diaMostrado = fechaHoyISO();
+
+function refrescarSiCambioElDia() {
+  const hoy = fechaHoyISO();
+  if (hoy === diaMostrado) return;
+  diaMostrado = hoy;
+  const indiceActivo = botonesNav.findIndex((b) => b.classList.contains("activo"));
+  if (indiceActivo >= 0) PANTALLAS[indiceActivo].modulo.actualizar();
+}
+
 async function iniciar() {
   // Se registra ANTES que cualquier `await`, para no depender del
   // evento 'load' (que podría dispararse mientras se espera a que
@@ -69,9 +83,10 @@ async function iniciar() {
   // antemano y se resuelve, SIN bloquear la carga de pantallas, si la
   // persona viene de Google (o si quedó un respaldo a medias). Si no
   // había nada en marcha, se intenta un respaldo silencioso.
+  servicioRespaldo.limpiarRestosAnteriores();
   servicioRespaldo.precargarGoogle();
   manejarRespaldoPendiente();
-  window.addEventListener("online", intentarRespaldoSilencioso);
+  window.addEventListener("online", intentarRespaldoAutomatico);
 
   // Si la app queda viva mientras se está en la pantalla de Google (en
   // celulares instalados esa pantalla se abre por encima), al volver
@@ -85,10 +100,16 @@ async function iniciar() {
     }, 2500);
   };
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") alVolverAPrimerPlano();
+    if (document.visibilityState === "visible") {
+      refrescarSiCambioElDia();
+      alVolverAPrimerPlano();
+    }
   });
   window.addEventListener("pageshow", (evento) => {
-    if (evento.persisted) alVolverAPrimerPlano();
+    if (evento.persisted) {
+      refrescarSiCambioElDia();
+      alVolverAPrimerPlano();
+    }
   });
 
   // La primera pantalla visible (Registro Diario) se actualiza de una,
@@ -115,10 +136,14 @@ async function manejarRespaldoPendiente() {
     });
 
     if (!regreso.ocurrio) {
-      intentarRespaldoSilencioso();
+      // Nada en marcha: se libera la bandera ANTES de pasar al respaldo
+      // automático (que se niega a correr mientras hay una resolución).
+      resolviendoRespaldo = false;
+      intentarRespaldoAutomatico();
       return;
     }
     quitarAvisoRespaldo();
+    if (regreso.resultado.ok) quitarAvisoSinRespaldar();
     mostrarResultadoDeRespaldo(regreso.resultado);
   } catch (error) {
     quitarAvisoRespaldo();
@@ -128,22 +153,31 @@ async function manejarRespaldoPendiente() {
   }
 }
 
-function mostrarResultadoDeRespaldo(resultado) {
+function mostrarResultadoDeRespaldo(resultado, { automatico = false } = {}) {
   if (resultado.ok) {
-    mostrarAvisoRespaldo({
-      icono: "✓",
-      titulo: "Copia de seguridad completada",
-      detalles: [
-        resultado.cuenta ? `Guardada en ${resultado.cuenta}` : "Guardada en Google Drive (no se pudo leer la cuenta)",
-        `Hoy ${horaLocalCorta()} · ya podés cerrar la aplicación`,
-      ],
-      autoCerrarMs: 10000,
-    });
+    const cuenta = resultado.cuenta ? `en ${resultado.cuenta}` : "en Google Drive (no se pudo leer la cuenta)";
+    if (automatico) {
+      // Respaldo hecho solo, al abrir la app o al volver la señal: se
+      // avisa QUÉ pasó, sin decir "ya podés cerrar" (recién se abrió).
+      mostrarAvisoRespaldo({
+        icono: "✓",
+        titulo: "Datos nuevos guardados en Google Drive",
+        detalles: [`Guardados ${cuenta}`, `Hoy ${horaLocalCorta()}`],
+        autoCerrarMs: 8000,
+      });
+    } else {
+      mostrarAvisoRespaldo({
+        icono: "✓",
+        titulo: "Copia de seguridad completada",
+        detalles: [`Guardada ${cuenta}`, `Hoy ${horaLocalCorta()} · ya podés cerrar la aplicación`],
+        autoCerrarMs: 10000,
+      });
+    }
   } else if (resultado.motivo === "cancelado") {
     mostrarToast("No se completó la autorización con Google.");
   } else if (resultado.motivo === "sin_autorizacion") {
     mostrarError(
-      'Se volvió de Google, pero la autorización no llegó a la aplicación, así que no se guardó nada. Probá de nuevo desde Ajustes → "Salir con copia de seguridad". Si se repite, en Ajustes → "Detalle de los últimos intentos" queda el registro.',
+      'Se volvió de Google, pero la autorización no llegó a la aplicación, así que no se guardó nada. Probá de nuevo desde Ajustes → "Salir con copia de seguridad".',
       "Copia de seguridad sin completar"
     );
   } else {
@@ -154,10 +188,34 @@ function mostrarResultadoDeRespaldo(resultado) {
   }
 }
 
-async function intentarRespaldoSilencioso() {
-  if (!navigator.onLine || !servicioRespaldo.yaAutorizado()) return;
-  const resultado = await servicioRespaldo.respaldarAhora();
-  if (resultado.ok) mostrarResultadoDeRespaldo(resultado);
+let respaldoAutomaticoEnCurso = false;
+
+/** Respaldo automático: SOLO si hay señal y hay datos nuevos desde el
+ * último respaldo. Si hacía falta y no se pudo, avisa (nunca en silencio). */
+async function intentarRespaldoAutomatico() {
+  if (respaldoAutomaticoEnCurso || resolviendoRespaldo || !navigator.onLine) return;
+  respaldoAutomaticoEnCurso = true;
+  try {
+    if (!(await servicioRespaldo.hayDatosSinRespaldar())) {
+      quitarAvisoSinRespaldar();
+      return;
+    }
+    if (!servicioRespaldo.yaAutorizado()) {
+      mostrarAvisoSinRespaldar("Todavía no se hizo la primera copia de seguridad.");
+      return;
+    }
+    const resultado = await servicioRespaldo.respaldarAhora();
+    if (resultado.ok) {
+      quitarAvisoSinRespaldar();
+      mostrarResultadoDeRespaldo(resultado, { automatico: true });
+    } else if (resultado.motivo !== "sin_conexion") {
+      mostrarAvisoSinRespaldar("La copia automática no se pudo hacer.");
+    }
+  } catch {
+    mostrarAvisoSinRespaldar("La copia automática no se pudo hacer.");
+  } finally {
+    respaldoAutomaticoEnCurso = false;
+  }
 }
 
 function horaLocalCorta() {
@@ -205,6 +263,52 @@ function mostrarAvisoRespaldo({ icono, titulo, detalles = [], autoCerrarMs = 0 }
 function quitarAvisoRespaldo() {
   if (avisoRespaldoActual) avisoRespaldoActual.remove();
   avisoRespaldoActual = null;
+}
+
+// ---------------------------------------------------------------------------
+// AVISO "HAY DATOS SIN RESPALDAR"
+//
+// Se muestra solo cuando hay señal, hay datos nuevos y el respaldo
+// automático no pudo hacerse (o todavía nunca se autorizó). Queda
+// fijo hasta que un respaldo salga bien; al tocarlo lleva a Ajustes.
+// Sin señal NO se muestra: en el campo sería un aviso imposible de
+// atender.
+// ---------------------------------------------------------------------------
+
+let avisoSinRespaldarActual = null;
+
+function mostrarAvisoSinRespaldar(motivo) {
+  quitarAvisoSinRespaldar();
+
+  const app = document.getElementById("app");
+  const aviso = el(
+    "div",
+    { class: "aviso-almacenamiento aviso-sin-respaldar", style: "cursor:pointer;", onclick: () => irAPantalla(PANTALLAS.length - 1) },
+    [
+      el("span", { class: "aviso-almacenamiento-icono" }, "⚠"),
+      el("div", {}, [
+        el("div", { class: "aviso-almacenamiento-titulo" }, "Hay datos sin respaldar"),
+        el(
+          "div",
+          { class: "aviso-almacenamiento-detalle" },
+          `${motivo} Tocá acá y en Ajustes usá "Salir con copia de seguridad".`
+        ),
+      ]),
+    ]
+  );
+
+  const barraSuperior = app.querySelector(".barra-superior");
+  if (barraSuperior) {
+    barraSuperior.insertAdjacentElement("afterend", aviso);
+  } else {
+    app.prepend(aviso);
+  }
+  avisoSinRespaldarActual = aviso;
+}
+
+function quitarAvisoSinRespaldar() {
+  if (avisoSinRespaldarActual) avisoSinRespaldarActual.remove();
+  avisoSinRespaldarActual = null;
 }
 
 // ---------------------------------------------------------------------------

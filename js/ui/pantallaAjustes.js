@@ -99,23 +99,6 @@ function formatearUltimoRespaldo(fecha) {
   return mismoDia ? `Última copia de seguridad: hoy ${hora}` : `Última copia de seguridad: ${fecha.toLocaleDateString("es-PY")} ${hora}`;
 }
 
-/** Un intento de respaldo, paso a paso, para el "Detalle" de Ajustes. */
-function pintarIntento(titulo, intento) {
-  if (!intento) {
-    return el("div", { style: "text-align:left;" }, [
-      el("div", { style: "font-weight:700;color:var(--verde-oscuro);" }, titulo),
-      el("div", {}, "Todavía no hubo ningún intento."),
-    ]);
-  }
-  const cuando = new Date(intento.cuando);
-  const fecha = `${cuando.toLocaleDateString("es-PY")} ${cuando.toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" })}`;
-  const estado = intento.resultado === "ok" ? "completado" : intento.resultado === "fallo" ? "no se completó" : "quedó sin terminar";
-  return el("div", { style: "text-align:left;line-height:1.5;" }, [
-    el("div", { style: "font-weight:700;color:var(--verde-oscuro);" }, `${titulo} · ${fecha} · ${estado}`),
-    ...intento.pasos.map((paso) => el("div", { style: paso.ok ? "" : "color:var(--rojo);" }, `${paso.ok ? "✓" : "✗"} ${paso.texto}`)),
-  ]);
-}
-
 let refrescarTarjetaRespaldo = null;
 
 function crearTarjetaRespaldo() {
@@ -127,11 +110,6 @@ function crearTarjetaRespaldo() {
     { class: "boton boton-secundario", target: "_blank", rel: "noopener", style: "display:none;" },
     "Abrir carpeta en Google Drive"
   );
-  const contenedorDetalle = el("div", { style: "display:flex;flex-direction:column;gap:10px;margin-top:8px;" });
-  const detalle = el("details", { style: "font-size:11.5px;color:var(--texto-secundario);" }, [
-    el("summary", { style: "cursor:pointer;text-align:center;" }, "Detalle de los últimos intentos"),
-    contenedorDetalle,
-  ]);
 
   const boton = el(
     "button",
@@ -139,7 +117,14 @@ function crearTarjetaRespaldo() {
       class: "boton boton-primario",
       onclick: async () => {
         if (!navigator.onLine) {
-          mostrarToast("Sin conexión ahora. Se va a respaldar solo la próxima vez que haya señal. Podés cerrar tranquilo.");
+          // Lo que se promete depende de si ya se hizo la primera copia
+          // a mano: el respaldo automático solo funciona después de eso.
+          mostrarToast(
+            servicioRespaldo.yaAutorizado()
+              ? "Sin conexión ahora. Tus datos siguen guardados en el celular. Con señal, la app respalda sola y, si no puede, te avisa."
+              : "Sin conexión ahora. Tus datos siguen guardados en el celular. Con señal, volvé a tocar este botón para hacer la primera copia.",
+            5000
+          );
           return;
         }
 
@@ -177,11 +162,6 @@ function crearTarjetaRespaldo() {
     } else {
       enlaceCarpeta.style.display = "none";
     }
-
-    const { manual, automatico } = servicioRespaldo.obtenerDiagnosticos();
-    vaciar(contenedorDetalle);
-    contenedorDetalle.appendChild(pintarIntento("Botón manual", manual));
-    contenedorDetalle.appendChild(pintarIntento("Automático", automatico));
   };
   refrescarTarjetaRespaldo();
 
@@ -190,7 +170,6 @@ function crearTarjetaRespaldo() {
     etiquetaUltimoRespaldo,
     etiquetaCuenta,
     enlaceCarpeta,
-    detalle,
   ]);
 }
 

@@ -14,18 +14,23 @@ import { fechaHoyISO, soloHoraMinuto, formatearKg } from "../utilidades.js";
 
 const NOMBRES_DIAS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
-let contenedorRaiz = null;
 let selectPotrero, selectCategoria, inputCantidad, contenedorEntregas, etiquetaResumen;
 let tarjetaTotalKg, tarjetaEntregas, tarjetaPotreros;
-let fechaSeleccionada = fechaHoyISO();
+let etiquetaFecha, botonRegistrar;
+let guardandoEntrega = false;
+
+// La fecha de "hoy" se pide SIEMPRE en el momento de usarla (nunca se
+// guarda al abrir la app): si la app queda abierta pasada la
+// medianoche, las entregas nuevas tienen que quedar con la fecha del
+// día en que realmente se cargan.
+function textoFechaDeHoy() {
+  const hoy = new Date();
+  return `${NOMBRES_DIAS[hoy.getDay()]} ${hoy.getDate()} de ${hoy
+    .toLocaleDateString("es-PY", { month: "long" })} de ${hoy.getFullYear()}`;
+}
 
 export function montar(contenedor) {
-  contenedorRaiz = contenedor;
   vaciar(contenedor);
-
-  const hoy = new Date();
-  const fechaLegible = `${NOMBRES_DIAS[hoy.getDay()]} ${hoy.getDate()} de ${hoy
-    .toLocaleDateString("es-PY", { month: "long" })} de ${hoy.getFullYear()}`;
 
   tarjetaTotalKg = tarjetaKpi("Kg Hoy", "0");
   tarjetaEntregas = tarjetaKpi("Entregas", "0");
@@ -35,7 +40,7 @@ export function montar(contenedor) {
   selectCategoria = crearSelectPersonalizado({});
   inputCantidad = el("input", { type: "number", step: "0.01", min: "0", placeholder: "0.0" });
 
-  const botonRegistrar = el(
+  botonRegistrar = el(
     "button",
     { class: "boton boton-primario", onclick: alRegistrarEntrega },
     "+  Registrar Entrega"
@@ -43,11 +48,12 @@ export function montar(contenedor) {
 
   contenedorEntregas = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
   etiquetaResumen = el("span", { class: "subtitulo-pagina" }, "");
+  etiquetaFecha = el("div", { class: "subtitulo-pagina" }, textoFechaDeHoy());
 
   contenedor.appendChild(
     el("div", { style: "display:flex;flex-direction:column;gap:2px;" }, [
       el("div", { class: "titulo-pagina" }, "Registro Diario"),
-      el("div", { class: "subtitulo-pagina" }, fechaLegible),
+      etiquetaFecha,
     ])
   );
 
@@ -97,14 +103,14 @@ async function cargarDesplegables() {
 }
 
 async function cargarKpis() {
-  const kpis = await servicioRegistro.obtenerKpisDelDia(fechaSeleccionada);
+  const kpis = await servicioRegistro.obtenerKpisDelDia(fechaHoyISO());
   actualizarTarjetaKpi(tarjetaTotalKg, formatearKg(kpis.totalKg));
   actualizarTarjetaKpi(tarjetaEntregas, String(kpis.entregas));
   actualizarTarjetaKpi(tarjetaPotreros, String(kpis.potrerosAtendidos));
 }
 
 async function cargarListaEntregas() {
-  const entregas = (await servicioRegistro.obtenerEntregasDelDia(fechaSeleccionada)).filter(
+  const entregas = (await servicioRegistro.obtenerEntregasDelDia(fechaHoyISO())).filter(
     (e) => e.estado === "activo"
   );
 
@@ -133,30 +139,43 @@ async function cargarListaEntregas() {
 }
 
 export async function actualizar() {
+  etiquetaFecha.textContent = textoFechaDeHoy();
   await cargarDesplegables();
   await cargarKpis();
   await cargarListaEntregas();
 }
 
 async function alRegistrarEntrega() {
-  try {
-    await servicioRegistro.registrarNuevaEntrega({
-      fecha: fechaSeleccionada,
-      potreroId: selectPotrero.value,
-      categoriaId: selectCategoria.value,
-      cantidadKg: inputCantidad.value,
-    });
-  } catch (error) {
-    if (error instanceof DatosInvalidosError) {
-      await mostrarError(error.message);
-      return;
-    }
-    throw error;
-  }
+  // Un segundo toque mientras se está guardando se ignora: sin esto,
+  // dos toques rápidos guardaban la MISMA entrega dos veces y los kg
+  // se contaban dobles.
+  if (guardandoEntrega) return;
+  guardandoEntrega = true;
+  botonRegistrar.disabled = true;
 
-  inputCantidad.value = "";
-  mostrarToast("Entrega registrada");
-  await actualizar();
+  try {
+    try {
+      await servicioRegistro.registrarNuevaEntrega({
+        fecha: fechaHoyISO(),
+        potreroId: selectPotrero.value,
+        categoriaId: selectCategoria.value,
+        cantidadKg: inputCantidad.value,
+      });
+    } catch (error) {
+      if (error instanceof DatosInvalidosError) {
+        await mostrarError(error.message);
+        return;
+      }
+      throw error;
+    }
+
+    inputCantidad.value = "";
+    mostrarToast("Entrega registrada");
+    await actualizar();
+  } finally {
+    guardandoEntrega = false;
+    botonRegistrar.disabled = false;
+  }
 }
 
 async function alAnularEntrega(entregaId) {

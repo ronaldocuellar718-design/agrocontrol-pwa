@@ -516,3 +516,17 @@ export async function obtenerTodoParaRespaldo() {
   ]);
   return { establecimientos, potreros, categorias, entregas };
 }
+
+/**
+ * ¿Hay alguna entrega registrada o anulada a partir de `corte`
+ * ('YYYY-MM-DD HH:MM:SS', hora local, el mismo formato que guardan las
+ * entregas)? Con `corte` nulo (nunca hubo respaldo), responde si hay
+ * alguna entrega. Sirve para que el respaldo automático se haga solo
+ * cuando de verdad hay algo nuevo que guardar.
+ */
+export async function hayEntregasModificadasDesde(corte) {
+  const tx = await abrirTransaccion(["entregas"], "readonly");
+  const entregas = await promesaDesdeRequest(tx.objectStore("entregas").getAll());
+  if (!corte) return entregas.length > 0;
+  return entregas.some((e) => e.horaRegistro >= corte || (e.fechaAnulacion && e.fechaAnulacion >= corte));
+}

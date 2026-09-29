@@ -15,7 +15,7 @@
  * el servidor.
  */
 
-const NOMBRE_CACHE = "agrocontrol-v9";
+const NOMBRE_CACHE = "agrocontrol-v10";
 
 const ARCHIVOS_A_CACHEAR = [
   "./",
@@ -74,18 +74,29 @@ self.addEventListener("activate", (evento) => {
 });
 
 self.addEventListener("fetch", (evento) => {
-  if (evento.request.method !== "GET") return;
+  const solicitud = evento.request;
+  if (solicitud.method !== "GET") return;
+
+  // Solo se atienden los archivos de la propia app. Todo lo que va a
+  // OTRO sitio (Google, Drive, etc.) pasa directo a internet, sin
+  // guardarse ni responderse desde acá. Antes se guardaba todo: las
+  // búsquedas a Drive ("¿ya existe la carpeta?") quedaban congeladas
+  // con la primera respuesta y cada respaldo creaba una carpeta nueva.
+  const url = new URL(solicitud.url);
+  if (url.origin !== self.location.origin) return;
 
   evento.respondWith(
-    caches.match(evento.request).then((respuestaCacheada) => {
+    caches.match(solicitud).then((respuestaCacheada) => {
       if (respuestaCacheada) return respuestaCacheada;
 
-      return fetch(evento.request)
+      return fetch(solicitud)
         .then((respuestaRed) => {
-          // Guardamos también lo que se pida y no estuviera cacheado,
-          // para que la próxima vez esté disponible sin conexión.
-          const copia = respuestaRed.clone();
-          caches.open(NOMBRE_CACHE).then((cache) => cache.put(evento.request, copia));
+          // Se guarda para uso sin conexión solo si salió bien: una
+          // respuesta de error nunca debe quedar fija en el caché.
+          if (respuestaRed && respuestaRed.ok) {
+            const copia = respuestaRed.clone();
+            caches.open(NOMBRE_CACHE).then((cache) => cache.put(solicitud, copia));
+          }
           return respuestaRed;
         })
         .catch(() => {

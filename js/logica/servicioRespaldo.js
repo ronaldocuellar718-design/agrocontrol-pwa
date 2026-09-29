@@ -15,16 +15,18 @@
  *
  *   - `respaldarAhora()` → disparo automático, en silencio, cuando la
  *     app detecta que hay conexión (ver app.js). Nunca navega a ningún
- *     lado ni muestra nada de Google.
+ *     lado ni muestra nada de Google. Solo se llama si
+ *     `hayDatosSinRespaldar()` da verdadero: sin datos nuevos no se
+ *     sube nada.
  *
- * REGLA DE ESTE ARCHIVO: nada queda en silencio. Cada intento deja un
- * registro paso a paso (ver `obtenerDiagnosticos`) que Ajustes muestra
- * en pantalla, y cada respuesta de Drive se verifica antes de darla
- * por buena.
+ * REGLA DE ESTE ARCHIVO: cada respuesta de Drive se verifica antes de
+ * darla por buena, y todo fallo se devuelve con su causa para que la
+ * pantalla se lo diga a la persona (nada queda en silencio). Además,
+ * nunca corren dos respaldos a la vez: se ponen en fila.
  */
 
 import * as repositorios from "../db/repositorios.js";
-import { fechaHoyISO } from "../utilidades.js";
+import { fechaHoyISO, horaActualCompleta } from "../utilidades.js";
 
 const CLIENT_ID = "1003784062771-4n7cicr3b0qsq2matb17o6lbl7k1ik5k.apps.googleusercontent.com";
 const SCOPE = "https://www.googleapis.com/auth/drive.file";
@@ -38,12 +40,14 @@ const URL_AUTORIZACION_GOOGLE = "https://accounts.google.com/o/oauth2/v2/auth";
 
 const CLAVE_AUTORIZADO = "agrocontrol_respaldo_autorizado";
 const CLAVE_ULTIMO_EXITO = "agrocontrol_respaldo_ultimo_exito";
+const CLAVE_CORTE = "agrocontrol_respaldo_corte"; // hora local en que se leyeron los datos del último respaldo bueno
 const CLAVE_CUENTA = "agrocontrol_respaldo_cuenta";
 const CLAVE_ENLACE_CARPETA = "agrocontrol_respaldo_carpeta";
 const CLAVE_RESPALDO_PENDIENTE = "agrocontrol_respaldo_pendiente"; // guarda la hora (ms) en que se salió hacia Google
 const CLAVE_TOKEN_TEMPORAL = "agrocontrol_respaldo_token_temporal"; // solo mientras dura la subida
-const CLAVE_DIAG_MANUAL = "agrocontrol_respaldo_diag_manual";
-const CLAVE_DIAG_AUTO = "agrocontrol_respaldo_diag_auto";
+
+// Claves de versiones anteriores que ya no se usan (ver limpiarRestosAnteriores).
+const CLAVES_OBSOLETAS = ["agrocontrol_respaldo_diag_manual", "agrocontrol_respaldo_diag_auto"];
 
 const VENTANA_PENDIENTE_MS = 30 * 60 * 1000; // pasado este tiempo, un "pendiente" se descarta
 const VIDA_TOKEN_TEMPORAL_MS = 50 * 60 * 1000; // el permiso de Google dura ~1 hora
@@ -51,48 +55,7 @@ const ESPERA_SILENCIOSA_MS = 20 * 1000;
 
 let clienteTokenGoogle = null;
 let promesaScriptGoogle = null;
-
-// ---------------------------------------------------------------------------
-// Registro de cada intento (para que nada quede en silencio)
-// ---------------------------------------------------------------------------
-
-function abrirDiagnostico(clave) {
-  const registro = { cuando: new Date().toISOString(), pasos: [], resultado: "en_curso" };
-  const guardar = () => {
-    try {
-      localStorage.setItem(clave, JSON.stringify(registro));
-    } catch {
-      // Sin espacio para guardar el registro: no debe frenar el respaldo.
-    }
-  };
-  guardar();
-  return {
-    paso(texto) {
-      registro.pasos.push({ ok: true, texto });
-      guardar();
-    },
-    fallo(texto) {
-      registro.pasos.push({ ok: false, texto });
-      registro.resultado = "fallo";
-      guardar();
-    },
-    exito() {
-      registro.resultado = "ok";
-      guardar();
-    },
-  };
-}
-
-export function obtenerDiagnosticos() {
-  const leer = (clave) => {
-    try {
-      return JSON.parse(localStorage.getItem(clave));
-    } catch {
-      return null;
-    }
-  };
-  return { manual: leer(CLAVE_DIAG_MANUAL), automatico: leer(CLAVE_DIAG_AUTO) };
-}
+let colaRespaldo = Promise.resolve();
 
 function conLimiteDeTiempo(promesa, ms, mensaje) {
   return new Promise((resolver, rechazar) => {
@@ -369,6 +332,22 @@ export function hayRespaldoPendiente() {
   return desde > 0 && Date.now() - desde < VENTANA_PENDIENTE_MS;
 }
 
+/**
+ * ¿Se registró o se anuló alguna entrega desde el último respaldo
+ * bueno? Es lo que decide si el respaldo automático tiene algo que
+ * hacer. (Un cambio hecho solo en Ajustes —un potrero, una categoría—
+ * no cuenta acá; viaja en el próximo respaldo, y el botón manual
+ * siempre respalda todo.)
+ */
+export async function hayDatosSinRespaldar() {
+  return repositorios.hayEntregasModificadasDesde(localStorage.getItem(CLAVE_CORTE));
+}
+
+/** Borra claves guardadas por versiones anteriores de la app. */
+export function limpiarRestosAnteriores() {
+  for (const clave of CLAVES_OBSOLETAS) localStorage.removeItem(clave);
+}
+
 function guardarTokenTemporal(token) {
   try {
     localStorage.setItem(CLAVE_TOKEN_TEMPORAL, JSON.stringify({ token, hasta: Date.now() + VIDA_TOKEN_TEMPORAL_MS }));
@@ -392,55 +371,57 @@ function borrarTokenTemporal() {
   localStorage.removeItem(CLAVE_TOKEN_TEMPORAL);
 }
 
-/** Hace el trabajo real (armar Excel + JSON y subirlos), ya con un
- * token en mano. Lo comparten las dos rutas de disparo. Cada paso
- * queda anotado en `diag`. */
-async function ejecutarRespaldoConToken(token, diag) {
+/** Hace el trabajo real: armar Excel + JSON y subirlos. Nunca lanza
+ * error: devuelve { ok: true, ... } o { ok: false, motivo, detalle }. */
+async function subirRespaldo(token) {
   try {
-    diag.paso("Google entregó la autorización");
-
     const cuenta = await obtenerCuenta(token);
-    diag.paso(cuenta ? `Cuenta de Google: ${cuenta}` : "No se pudo leer el correo de la cuenta (el respaldo sigue igual)");
 
+    // Se anota la hora ANTES de leer los datos: lo que se cargue
+    // mientras dura la subida cuenta como "pendiente de respaldar".
+    const corte = horaActualCompleta();
     const datos = await repositorios.obtenerTodoParaRespaldo();
-    const entregasActivas = datos.entregas.filter((e) => e.estado === "activo").length;
-    diag.paso(`Datos leídos del celular: ${entregasActivas} entregas, ${datos.potreros.length} potreros`);
 
     const carpeta = await obtenerOCrearCarpeta(token);
-    diag.paso(carpeta.creada ? `Carpeta "${NOMBRE_CARPETA}" creada en Drive` : `Carpeta "${NOMBRE_CARPETA}" encontrada en Drive`);
 
     // La fecha del nombre es la LOCAL (igual que la del Registro Diario),
     // no la UTC: después de las 21:00 en Paraguay la UTC ya es "mañana".
     const nombreBase = `AgroControl_Respaldo_${fechaHoyISO()}`;
 
     const bufferExcel = await construirExcelRespaldo(datos);
-    const excel = await subirOActualizarArchivo(
+    await subirOActualizarArchivo(
       token,
       carpeta.id,
       `${nombreBase}.xlsx`,
       bufferExcel,
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    diag.paso(`Excel ${excel.accion}: ${nombreBase}.xlsx`);
 
     const jsonTexto = JSON.stringify({ version: 1, generadoEn: new Date().toISOString(), ...datos }, null, 2);
     const bufferJson = new TextEncoder().encode(jsonTexto);
-    const json = await subirOActualizarArchivo(token, carpeta.id, `${nombreBase}.json`, bufferJson, "application/json");
-    diag.paso(`JSON ${json.accion}: ${nombreBase}.json`);
+    await subirOActualizarArchivo(token, carpeta.id, `${nombreBase}.json`, bufferJson, "application/json");
 
     localStorage.setItem(CLAVE_AUTORIZADO, "1");
     localStorage.setItem(CLAVE_ULTIMO_EXITO, new Date().toISOString());
+    localStorage.setItem(CLAVE_CORTE, corte);
     if (cuenta) localStorage.setItem(CLAVE_CUENTA, cuenta);
     else localStorage.removeItem(CLAVE_CUENTA);
     if (carpeta.enlace) localStorage.setItem(CLAVE_ENLACE_CARPETA, carpeta.enlace);
     else localStorage.removeItem(CLAVE_ENLACE_CARPETA);
 
-    diag.exito();
     return { ok: true, cuenta, carpetaEnlace: carpeta.enlace };
   } catch (error) {
-    diag.fallo(error.message);
     return { ok: false, motivo: "error_subida", detalle: error.message };
   }
+}
+
+/** Pone el respaldo en la fila: si ya hay uno en marcha, este espera a
+ * que termine (así nunca se crean dos carpetas o dos archivos iguales
+ * por correr dos respaldos a la vez). */
+function ejecutarRespaldoConToken(token) {
+  const corrida = colaRespaldo.then(() => subirRespaldo(token));
+  colaRespaldo = corrida.catch(() => {});
+  return corrida;
 }
 
 /**
@@ -452,18 +433,14 @@ async function ejecutarRespaldoConToken(token, diag) {
 export async function respaldarAhora() {
   if (!navigator.onLine) return { ok: false, motivo: "sin_conexion" };
 
-  const diag = abrirDiagnostico(CLAVE_DIAG_AUTO);
-  diag.paso("Intento automático: pidiendo el permiso a Google en silencio");
-
   let token;
   try {
     token = await conLimiteDeTiempo(obtenerTokenSilencioso(), ESPERA_SILENCIOSA_MS, "Google no respondió a tiempo");
-  } catch (error) {
-    diag.fallo(`Google no renovó el permiso en silencio (${error.message}). Hace falta usar el botón "Salir con copia de seguridad"`);
+  } catch {
     return { ok: false, motivo: "sin_autorizacion" };
   }
 
-  return ejecutarRespaldoConToken(token, diag);
+  return ejecutarRespaldoConToken(token);
 }
 
 /**
@@ -494,8 +471,7 @@ export function iniciarRespaldoInteractivo() {
  *
  *   - viene de Google con autorización  → termina de subir el respaldo
  *   - viene de Google cancelado/error   → lo informa
- *   - volvió de Google SIN autorización → lo informa (antes esto era
- *                                          un silencio total)
+ *   - volvió de Google SIN autorización → lo informa
  *   - una subida quedó a medias por un cierre inesperado → la retoma
  *
  * Si no había nada en marcha devuelve { ocurrio: false }.
@@ -517,22 +493,18 @@ export async function resolverRegresoDeGoogle({ alComenzar } = {}) {
   localStorage.removeItem(CLAVE_RESPALDO_PENDIENTE);
 
   if (hayPendiente) {
-    const diag = abrirDiagnostico(CLAVE_DIAG_MANUAL);
-
     if (errorGoogle) {
       const cancelado = errorGoogle === "access_denied";
-      diag.fallo(cancelado ? "Se canceló la autorización en la pantalla de Google" : `Google devolvió un error: ${errorGoogle}`);
       return { ocurrio: true, resultado: { ok: false, motivo: cancelado ? "cancelado" : "rechazado", detalle: errorGoogle } };
     }
 
     if (!tokenUrl) {
-      diag.fallo("Se volvió de Google, pero la autorización no llegó a la aplicación");
       return { ocurrio: true, resultado: { ok: false, motivo: "sin_autorizacion" } };
     }
 
     guardarTokenTemporal(tokenUrl);
     alComenzar?.();
-    const resultado = await ejecutarRespaldoConToken(tokenUrl, diag);
+    const resultado = await ejecutarRespaldoConToken(tokenUrl);
     borrarTokenTemporal();
     return { ocurrio: true, resultado };
   }
@@ -540,10 +512,8 @@ export async function resolverRegresoDeGoogle({ alComenzar } = {}) {
   // Sin salida reciente hacia Google: ¿quedó una subida a medias?
   const tokenPendiente = leerTokenTemporal();
   if (tokenPendiente) {
-    const diag = abrirDiagnostico(CLAVE_DIAG_MANUAL);
-    diag.paso("Se retoma un respaldo que había quedado a medias");
     alComenzar?.();
-    const resultado = await ejecutarRespaldoConToken(tokenPendiente, diag);
+    const resultado = await ejecutarRespaldoConToken(tokenPendiente);
     borrarTokenTemporal();
     return { ocurrio: true, resultado, reanudado: true };
   }
